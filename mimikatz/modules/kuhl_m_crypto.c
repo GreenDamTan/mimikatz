@@ -28,8 +28,10 @@ PCP_EXPORTKEY K_CPExportKey = NULL;
 PNCRYPT_OPEN_STORAGE_PROVIDER K_NCryptOpenStorageProvider = NULL;
 PNCRYPT_ENUM_KEYS K_NCryptEnumKeys = NULL;
 PNCRYPT_OPEN_KEY K_NCryptOpenKey = NULL;
+PNCRYPT_IMPORT_KEY K_NCryptImportKey = NULL;
 PNCRYPT_EXPORT_KEY K_NCryptExportKey = NULL;
 PNCRYPT_GET_PROPERTY K_NCryptGetProperty = NULL;
+PNCRYPT_SET_PROPERTY K_NCryptSetProperty = NULL;
 PNCRYPT_FREE_BUFFER K_NCryptFreeBuffer = NULL;
 PNCRYPT_FREE_OBJECT K_NCryptFreeObject = NULL;
 PBCRYPT_ENUM_REGISTERED_PROVIDERS K_BCryptEnumRegisteredProviders = NULL;
@@ -50,14 +52,16 @@ NTSTATUS kuhl_m_crypto_init()
 					K_NCryptOpenStorageProvider = (PNCRYPT_OPEN_STORAGE_PROVIDER) GetProcAddress(kuhl_m_crypto_hNCrypt, "NCryptOpenStorageProvider");
 					K_NCryptEnumKeys = (PNCRYPT_ENUM_KEYS) GetProcAddress(kuhl_m_crypto_hNCrypt, "NCryptEnumKeys");
 					K_NCryptOpenKey = (PNCRYPT_OPEN_KEY) GetProcAddress(kuhl_m_crypto_hNCrypt, "NCryptOpenKey");
+					K_NCryptImportKey = (PNCRYPT_IMPORT_KEY) GetProcAddress(kuhl_m_crypto_hNCrypt, "NCryptImportKey");
 					K_NCryptExportKey = (PNCRYPT_EXPORT_KEY) GetProcAddress(kuhl_m_crypto_hNCrypt, "NCryptExportKey");
 					K_NCryptGetProperty = (PNCRYPT_GET_PROPERTY) GetProcAddress(kuhl_m_crypto_hNCrypt, "NCryptGetProperty");
+					K_NCryptSetProperty = (PNCRYPT_SET_PROPERTY) GetProcAddress(kuhl_m_crypto_hNCrypt, "NCryptSetProperty");
 					K_NCryptFreeBuffer = (PNCRYPT_FREE_BUFFER) GetProcAddress(kuhl_m_crypto_hNCrypt, "NCryptFreeBuffer");
 					K_NCryptFreeObject = (PNCRYPT_FREE_OBJECT) GetProcAddress(kuhl_m_crypto_hNCrypt, "NCryptFreeObject");
 					K_BCryptEnumRegisteredProviders = (PBCRYPT_ENUM_REGISTERED_PROVIDERS) GetProcAddress(kuhl_m_crypto_hNCrypt, "BCryptEnumRegisteredProviders");
 					K_BCryptFreeBuffer = (PBCRYPT_FREE_BUFFER) GetProcAddress(kuhl_m_crypto_hNCrypt, "BCryptFreeBuffer");
 		
-					if(K_NCryptOpenStorageProvider && K_NCryptEnumKeys && K_NCryptOpenKey && K_NCryptExportKey && K_NCryptGetProperty && K_NCryptFreeBuffer && K_NCryptFreeObject && K_BCryptEnumRegisteredProviders && K_BCryptFreeBuffer)
+					if(K_NCryptOpenStorageProvider && K_NCryptEnumKeys && K_NCryptOpenKey && K_NCryptImportKey && K_NCryptExportKey && K_NCryptGetProperty && K_NCryptSetProperty && K_NCryptFreeBuffer && K_NCryptFreeObject && K_BCryptEnumRegisteredProviders && K_BCryptFreeBuffer)
 						status = STATUS_SUCCESS;
 				}
 			}
@@ -249,10 +253,10 @@ NTSTATUS kuhl_m_crypto_l_certificates(int argc, wchar_t * argv[])
 NTSTATUS kuhl_m_crypto_l_keys(int argc, wchar_t * argv[])
 {
 	HCRYPTPROV hCryptProv;
-	DWORD i, dwSizeNeeded, ks, CRYPT_first_next = CRYPT_FIRST;
+	DWORD i, dwSizeNeeded, dwUniqueSizeNeeded, ks, CRYPT_first_next = CRYPT_FIRST;
 	BOOL success;
-	char * aContainerName;
-	wchar_t * containerName;
+	char *aContainerName, *aUniqueName;
+	wchar_t *containerName, *uUniqueName;
 	HCRYPTPROV hCryptKeyProv;
 	HCRYPTKEY hCapiKey;
 
@@ -306,6 +310,16 @@ NTSTATUS kuhl_m_crypto_l_keys(int argc, wchar_t * argv[])
 						kprintf(L"\n%2u. %s\n", i,  containerName);
 						if(CryptAcquireContext(&hCryptKeyProv, containerName, pProvider, dwProviderType, dwFlags))
 						{
+							if(CryptGetProvParam(hCryptKeyProv, PP_UNIQUE_CONTAINER, NULL, &dwUniqueSizeNeeded, 0))
+							{
+								if(aUniqueName = (char *) LocalAlloc(LPTR, dwUniqueSizeNeeded))
+								{
+									if(CryptGetProvParam(hCryptKeyProv, PP_UNIQUE_CONTAINER, (BYTE *) aUniqueName, &dwUniqueSizeNeeded, 0))
+										kprintf(L"    %S\n", aUniqueName);
+									LocalFree(aUniqueName);
+								}
+							}
+
 							for(ks = AT_KEYEXCHANGE, hCapiKey = 0; (ks <= AT_SIGNATURE) && !CryptGetUserKey(hCryptKeyProv, ks, &hCapiKey); ks++);
 							if(hCapiKey)
 							{
@@ -344,6 +358,15 @@ NTSTATUS kuhl_m_crypto_l_keys(int argc, wchar_t * argv[])
 
 				if(NT_SUCCESS(retour = K_NCryptOpenKey(hProvider, &hCngKey, pKeyName->pszName, 0, dwFlags)))
 				{
+					if(NT_SUCCESS(K_NCryptGetProperty(hCngKey, NCRYPT_UNIQUE_NAME_PROPERTY, NULL, 0, &dwUniqueSizeNeeded, 0)))
+					{
+						if(uUniqueName = (wchar_t *) LocalAlloc(LPTR, dwUniqueSizeNeeded))
+						{
+							if(NT_SUCCESS(K_NCryptGetProperty(hCngKey, NCRYPT_UNIQUE_NAME_PROPERTY, (BYTE *) uUniqueName, dwUniqueSizeNeeded, &dwUniqueSizeNeeded, 0)))
+								kprintf(L"    %s\n", uUniqueName);
+							LocalFree(uUniqueName);
+						}
+					}
 					kuhl_m_crypto_printKeyInfos(hCngKey, 0);
 					if(export)
 						kuhl_m_crypto_exportKeyToFile(hCngKey, 0, AT_KEYEXCHANGE, szStore, i, pKeyName->pszName);
@@ -398,6 +421,58 @@ void kuhl_m_crypto_printKeyInfos(HCRYPTPROV_OR_NCRYPT_KEY_HANDLE monProv, HCRYPT
 		L"\tExportable key : %s\n"
 		L"\tKey size       : %u\n",
 		(isExportable ? L"YES" : L"NO"), keySize);
+}
+
+void kuhl_m_crypto_exportRawKeyToFile(LPCVOID data, DWORD size, BOOL isCNG, const wchar_t * store, const DWORD index, const wchar_t * name, BOOL wantExport, BOOL wantInfos)
+{
+	BOOL status = FALSE;
+	NCRYPT_PROV_HANDLE hCngProv = 0;
+	NCRYPT_KEY_HANDLE hCngKey = 0;
+	DWORD exportPolicy = NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG;
+	HCRYPTPROV hCapiProv = 0;
+	HCRYPTKEY hCapiKey = 0;
+
+	if(isCNG)
+	{
+		if(kuhl_m_crypto_hNCrypt)
+		{
+			if(NT_SUCCESS(K_NCryptOpenStorageProvider(&hCngProv, MS_KEY_STORAGE_PROVIDER, 0)))
+			{
+				if(NT_SUCCESS(K_NCryptImportKey(hCngProv, 0, BCRYPT_RSAPRIVATE_BLOB, NULL, &hCngKey, (PBYTE) data, size, 0)))
+				{
+					if(!NT_SUCCESS(K_NCryptSetProperty(hCngKey, NCRYPT_EXPORT_POLICY_PROPERTY, (PBYTE) &exportPolicy, sizeof(DWORD), 0)))
+						PRINT_ERROR(L"NCryptSetProperty\n");
+				}
+				else PRINT_ERROR(L"NCryptImportKey\n");
+			}
+		}
+		else PRINT_ERROR(L"No CNG!\n");
+	}
+	else
+	{
+		if(CryptAcquireContext(&hCapiProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+		{
+			if(!CryptImportKey(hCapiProv, (LPCBYTE) data, size, 0, CRYPT_EXPORTABLE, &hCapiKey))
+				PRINT_ERROR_AUTO(L"CryptImportKey");
+		}
+	}
+
+	if(hCngKey || hCapiKey)
+	{
+		if(wantInfos)
+			kuhl_m_crypto_printKeyInfos(hCngKey, hCapiKey);
+		if(wantExport)
+			kuhl_m_crypto_exportKeyToFile(hCngKey, hCapiKey, AT_KEYEXCHANGE, store, 0, name);
+		if(hCngKey)
+			K_NCryptFreeObject(hCngKey);
+		if(hCapiKey)
+			CryptDestroyKey(hCapiKey);
+	}
+
+	if(hCngProv)
+		K_NCryptFreeObject(hCngProv);
+	if(hCapiProv)
+		CryptReleaseContext(hCapiProv, 0);
 }
 
 void kuhl_m_crypto_exportKeyToFile(NCRYPT_KEY_HANDLE hCngKey, HCRYPTKEY hCapiKey, DWORD keySpec, const wchar_t * store, const DWORD index, const wchar_t * name)
@@ -546,7 +621,6 @@ BOOL kuhl_m_crypto_DerAndKeyToPfx(LPCVOID der, DWORD derLen, LPCVOID key, DWORD 
 			else PRINT_ERROR_AUTO(L"CryptAcquireContext");
 			CertFreeCertificateContext(pCertContext);
 		}
-	
 		else PRINT_ERROR_AUTO(L"CertAddEncodedCertificateToStore");
 		LocalFree(infos.pwszContainerName);
 	}
